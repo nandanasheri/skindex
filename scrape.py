@@ -35,7 +35,6 @@ def scrape_products(pages:int):
         r = requests.get(url)
         soup = BeautifulSoup(r.text, "html.parser")
         product_links = soup.find_all('a')    
-        print("LEN of products", i, len(product_links))   
         for a in product_links:
             href = a.get("href")  # or a['href']
             if href.startswith("/products/") and href not in exclude_links and "discontinued" not in href:
