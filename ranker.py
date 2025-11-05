@@ -5,7 +5,7 @@ You will be implementing WordCountCosineSimilarity, DirichletLM, TF-IDF, BM25, P
 from collections import Counter, defaultdict
 import numpy as np
 from indexing import InvertedIndex
-
+import random
 
 class Ranker:
     """
@@ -128,6 +128,28 @@ class SampleScorer(RelevanceScorer):
         Scores all documents as 10.
         """
         return 10
+
+class RandomScorer(RelevanceScorer):
+    def __init__(self, index: InvertedIndex, parameters) -> None:
+        self.index = index
+        self.parameters = parameters
+
+    def score(self, docid: int, doc_word_counts: dict[str, int], query_parts: list[str]) -> float:
+        """
+        Scores all documents randomly.
+        """
+        return random.randint(1,5)
+    
+class DocLengthScorer(RelevanceScorer):
+    def __init__(self, index: InvertedIndex, parameters) -> None:
+        self.index = index
+        self.parameters = parameters
+
+    def score(self, docid: int, doc_word_counts: dict[str, int], query_parts: list[str]) -> float:
+        """
+        Returns length of each document 
+        """
+        return self.index.get_doc_metadata(docid)["length"]
 
 
 # TODO: Implement unnormalized cosine similarity on word count vectors
@@ -267,3 +289,5 @@ class TF_IDF(RelevanceScorer):
 
         # 4. Return the score
         return score.item()
+
+

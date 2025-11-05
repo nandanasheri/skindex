@@ -337,8 +337,7 @@ class Indexer:
     The Indexer class is responsible for creating the index used by the search/ranking algorithm.
     '''
     @staticmethod
-    def create_index(index_type: IndexType, inci_products_filepath: str,
-                     inci_ingredients_functions_filepath: str,
+    def create_index(index_type: IndexType, dataset_path: str,
                      document_preprocessor: Tokenizer, stopwords: set[str],
                      minimum_word_frequency: int, text_key="text",
                      max_docs: int = -1) -> InvertedIndex:
@@ -347,8 +346,7 @@ class Indexer:
 
         Args:
             index_type: This parameter tells you which type of index to create, e.g., BasicInvertedIndex
-            inci_products_filepath: The file path to the product dataset
-            inci_ingredients_functions_filepath: The file path to the ingredient function dataset
+            dataset_path: The file path to your dataset
             document_preprocessor: A class which has a 'tokenize' function which would read each document's text and return a list of valid tokens
             stopwords: The set of stopwords to remove during preprocessing or 'None' if no stopword filtering is to be done
             minimum_word_frequency: An optional configuration which sets the minimum word frequency of a particular token to be indexed
@@ -377,7 +375,7 @@ class Indexer:
         # NOTE 2: Word frequencies should be calculated prior to removing stop words
         #         Word frequency refers to how many times that word appears in the collection
 
-        if inci_products_filepath.endswith('.gz'):
+        if dataset_path.endswith('.gz'):
             openFile = gzip.open
             interaction = 'rt'
         else:
@@ -387,48 +385,49 @@ class Indexer:
         count = 0
         wordFrequencies = Counter()
         doc_tokens = []
-        
-        # Process Ingredients and Ingredient Function
-        with open(inci_ingredients_functions_filepath) as f:
-            func_defs_list = json.load(f)
 
-        func_defs_dict = {entry['func_id']: {'title': entry['title'], 'desc': entry['desc']} for entry in func_defs_list}
-
-        # First pass: collect tokens and word frequencies
-        with openFile(inci_products_filepath, interaction) as f:
+        with openFile(dataset_path, interaction) as f:
             for line in f:
                 if max_docs > -1 and count >= max_docs:
                     break
-                product = json.loads(line)
-                
-                # Gather ingredient function info
-                ingredients_text = ""
-                for function_id in product.get("key_ingredient_func", []):
-                    ingredients_text += func_defs_dict[function_id]["title"] + " " + func_defs_dict[function_id]["desc"] + " "
-                
-                # Ingredient Title, Ingredient Description, Product Title, Product Description, Product Brand
-                concat_text = f"{ingredients_text} {product.get('title', '')} {product.get('desc', '')} {product.get('brand', '')}"
+                document = json.loads(line)
+
+                # this is used to include title, brand, and product description
+                concat_text = ""
+                concat_text = document[text_key] + " " + document['title'] + " " + document['brand']
 
                 tokens = document_preprocessor.tokenize(concat_text)
-                doc_tokens.append((product["docid"], tokens))
+                doc_tokens.append((document["docid"], tokens))
                 wordFrequencies.update(tokens)
                 count += 1
 
         # TODO: Figure out which set of words to not index because they are stopwords or
         #       have too low of a frequency
-        if minimum_word_frequency > 0:
-            allowed_tokens = {word for word, freq in wordFrequencies.items() if freq >= minimum_word_frequency}
-        else:
-            allowed_tokens = set(wordFrequencies.keys())
-            
+
+        # HINT 1: This homework should work fine on a laptop with 16GB of memory but if you need,
+        #       you can delete some unused objects here to free up some space
+
+        unvalidWords = set()
         if stopwords:
-            allowed_tokens -= stopwords
+            unvalidWords.update(stopwords)
+
+        if minimum_word_frequency > 0:
+            for word, freq in wordFrequencies.items():
+                if freq < minimum_word_frequency:
+                    unvalidWords.update([word])
+
 
         # TODO: Read the collection and process/index each document.
         #       Only index the terms that are not stopwords and have high-enough frequency
-        for doc_id, doc_token_list in tqdm(doc_tokens, total=len(doc_tokens)):
+
+        # HINT 2: Think about scalability. For a large collection, the more loops we use to go through all the documents,
+        #             the slower our program runs.
+        #         It may require more than 1 loop to finish the task but try to minimize the number of loops.
+
+        for doc_id, doc_token_list in tqdm(doc_tokens, total=200000):
             filtered_tokens = [
-                token for token in doc_token_list if token in allowed_tokens
+                token if token and token not in unvalidWords else None
+                for token in doc_token_list
             ]
             index.add_doc(doc_id, filtered_tokens)
         index.get_statistics()
