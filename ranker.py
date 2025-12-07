@@ -13,7 +13,7 @@ class Ranker:
     A Ranker can be configured with any RelevanceScorer.
     """
     # This class is responsible for returning a list of sorted relevant documents.
-    def __init__(self, index: InvertedIndex, document_preprocessor, stopwords: set[str],
+    def __init__(self, product_index: InvertedIndex, ingredient_index: InvertedIndex, document_preprocessor, stopwords: set[str],
                  scorer: 'RelevanceScorer', raw_text_dict: dict[int, str] = None) -> None:
         """
         Initializes the state of the Ranker object.
@@ -23,9 +23,9 @@ class Ranker:
             document_preprocessor: The DocumentPreprocessor to use for turning strings into tokens
             stopwords: The set of stopwords to use or None if no stopword filtering is to be done
             scorer: The RelevanceScorer object
-            raw_text_dict: A dictionary mapping a document ID to the raw string of the document (Not needed for HW1)
         """
-        self.index = index
+        self.product_index = product_index
+        self.ingredient_index = ingredient_index
         self.tokenize = document_preprocessor.tokenize
         self.scorer = scorer
         self.stopwords = stopwords
@@ -57,11 +57,17 @@ class Ranker:
         doc_word_counter = defaultdict(Counter)
 
         for token in valid_tokens:
-            docs_w_token = self.index.index[token]
+            docs_w_token = self.product_index.index[token]
             if not token:
                 continue
             for doc in docs_w_token:
                 doc_word_counter[doc[0]][token] = doc[1]
+            
+            docs_w_token_ingred = self.ingredient_index.index[token]
+            if not token:
+                continue
+            for doc in docs_w_token_ingred:
+                doc_word_counter[doc[0]][token] += doc[1]
         
         all_scores = []
         for doc_id in doc_word_counter:
@@ -145,4 +151,72 @@ class BM25(RelevanceScorer):
                     score += bm25
         
         return score
+    
+class BM25F(RelevanceScorer):
+    def __init__(self, product_index: InvertedIndex, ingredient_index: InvertedIndex, parameters: dict = {'b': 0.75, 'k1': 1.2, 'k3': 8, 'w_prod': 1.0, 'w_ing': 2.0}) -> None:
+        self.product_index = product_index
+        self.ingredient_index = ingredient_index
+        self.b = parameters['b']
+        self.k1 = parameters['k1']
+        self.k3 = parameters['k3']
+        self.w_prod = parameters['w_prod']
+        self.w_ing = parameters['w_ing']
 
+    def score(self, docid: int, doc_word_counts: dict[str, int], query_word_counts: dict[str, int]) -> float:
+        # 1. Get necessary information from each index
+
+        # Product Index (Product Description)
+        prod_desc_avdl = self.product_index.get_statistics()['mean_document_length']
+        prod_desc_num_docs = self.product_index.get_statistics()['number_of_documents']
+        try:
+            prod_desc_doc_len = self.product_index.get_doc_metadata(docid)['length']
+        except KeyError:
+            prod_desc_doc_len = 0
+
+        # Ingredient Index (Ingredient Function)
+        ingredient_avdl = self.ingredient_index.get_statistics()['mean_document_length']
+        ingredient_num_docs = self.ingredient_index.get_statistics()['number_of_documents']
+        try:
+            ingredient_doc_len = self.ingredient_index.get_doc_metadata(docid)['length']
+        except KeyError:
+            ingredient_doc_len = 0
+
+        # Hyperparameters
+        b = self.b
+        k1 = self.k1
+        k3 = self.k3
+        score = 0.0
+
+        # 2. Compute additional terms to use in algorithm
+        for q_term in query_word_counts:
+            tf_prod = 0.0
+            tf_ingred = 0.0
+            # 3. Compute TF for product index
+            if q_term and q_term in self.product_index.index:
+                prod_doc_tf = doc_word_counts[q_term] # term frequency
+                if prod_doc_tf > 0:
+                    tf_prod = ((k1 + 1) * prod_doc_tf) / float((k1 * (1 - b + (b * (prod_desc_doc_len/float(prod_desc_avdl))))) + prod_doc_tf)
+            # 4. Compute TF for ingredient index
+            if q_term and q_term in self.ingredient_index.index:
+                ingred_doc_tf = doc_word_counts[q_term] # term frequency
+                if ingred_doc_tf > 0:
+                    tf_ingred = ((k1 + 1) * ingred_doc_tf) / float((k1 * (1 - b + (b * (ingredient_doc_len/float(ingredient_avdl))))) + ingred_doc_tf)
+
+            # 5. Get total tf
+            tf_doc = self.w_prod * tf_prod + self.w_ing * tf_ingred
+
+            # document frequency for each index
+            df_product = self.product_index.get_term_metadata(q_term)["doc_frequency"]
+            df_ingredient = self.ingredient_index.get_term_metadata(q_term)["doc_frequency"]
+            df = df_product + df_ingredient
+            total_docs = max(prod_desc_num_docs, ingredient_num_docs)
+            idf = np.log((total_docs - df + 0.5) / (df + 0.5))
+            # compute idf value based on max(doc_freq)
+            # blended_idf = max(np.log((prod_desc_num_docs - df_product + 0.5) / float(df_product + 0.5)), (np.log((ingredient_num_docs - df_ingredient + 0.5) / float(df_ingredient + 0.5))))
+            qtf = query_word_counts[q_term]
+            # qtf_norm = ((k3 + 1) * qtf) / float(k3 + qtf)
+            qtf_norm = (((k3 + 1) * qtf) / (k3 * qtf))
+            bm25 = qtf_norm * tf_doc * idf
+            score += bm25
+
+        return score
