@@ -45,33 +45,35 @@ class Ranker:
         """
         # 1. Tokenize query (Hint: Also apply stopwords filtering to the tokenized query)
         tokens = self.tokenize(query)
-        valid_tokens = []
-
-        for token in tokens:
-            if token not in self.stopwords:
-                valid_tokens.append(token)
-            else:
-                valid_tokens.append(None)
+        # Filter out None/stopwords completely for the Counter
+        valid_tokens = [t for t in tokens if t not in self.stopwords and t is not None]
 
         query_word_counts = Counter(valid_tokens)
-        doc_word_counter = defaultdict(Counter)
-
-        for token in valid_tokens:
-            docs_w_token = self.product_index.index[token]
-            if not token:
-                continue
-            for doc in docs_w_token:
-                doc_word_counter[doc[0]][token] = doc[1]
-            
-            docs_w_token_ingred = self.ingredient_index.index[token]
-            if not token:
-                continue
-            for doc in docs_w_token_ingred:
-                doc_word_counter[doc[0]][token] += doc[1]
         
+        # 2. Build the candidate dictionary
+        # Structure: {docid: {term: {'prod': freq, 'ing': freq}}}
+        doc_data = defaultdict(lambda: defaultdict(lambda: {'prod': 0, 'ing': 0}))
+
+        for token in set(valid_tokens):
+            # A. Product Index Postings
+            if token in self.product_index.vocabulary:
+                product_postings = self.product_index.get_postings(token)
+                for docid, freq in product_postings:
+                    # Store count of tokens in each doc in product index
+                    doc_data[docid][token]['prod'] = freq
+                    
+            # B. Ingredient Index Postings
+            if token in self.ingredient_index.vocabulary:
+                ingredient_postings = self.ingredient_index.get_postings(token)
+                for docid, freq in ingredient_postings:
+                    # Store count of tokens in each doc in ingredient index
+                    doc_data[docid][token]['ing'] = freq
+        
+        # 3. Score Documents
         all_scores = []
-        for doc_id in doc_word_counter:
-            score = self.scorer.score(doc_id, doc_word_counter[doc_id], query_word_counts)
+        for doc_id, term_counts in doc_data.items():
+            # term_counts is: {'acne': {'prod': 1, 'ing': 0}, 'cream': {'prod': 5, 'ing': 0}}
+            score = self.scorer.score(doc_id, term_counts, query_word_counts)
             all_scores.append((doc_id,score))
 
         # 2.1 For each token in the tokenized query, find out all documents that contain it and counting its frequency within each document.
@@ -99,7 +101,7 @@ class RelevanceScorer:
     def __init__(self, index, parameters) -> None:
         raise NotImplementedError
 
-    def score(self, docid: int, doc_word_counts: dict[str, int], query_word_counts: dict[str, int]) -> float:
+    def score(self, docid: int, doc_word_counts: dict, query_word_counts: dict[str, int]) -> float:
         """
         Returns a score for how relevance is the document for the provided query.
 
@@ -153,7 +155,7 @@ class BM25(RelevanceScorer):
         return score
     
 class BM25F(RelevanceScorer):
-    def __init__(self, product_index: InvertedIndex, ingredient_index: InvertedIndex, parameters: dict = {'b': 0.75, 'k1': 1.2, 'k3': 8, 'w_prod': 1.0, 'w_ing': 2.0}) -> None:
+    def __init__(self, product_index: InvertedIndex, ingredient_index: InvertedIndex, parameters: dict = {'b': 0.1, 'k1': 1.2, 'k3': 8, 'w_prod': 5.0, 'w_ing': 1.0}) -> None:
         self.product_index = product_index
         self.ingredient_index = ingredient_index
         self.b = parameters['b']
@@ -161,62 +163,82 @@ class BM25F(RelevanceScorer):
         self.k3 = parameters['k3']
         self.w_prod = parameters['w_prod']
         self.w_ing = parameters['w_ing']
+        
+        self.stats_prod = self.product_index.get_statistics()
+        self.stats_ing = self.ingredient_index.get_statistics()
 
-    def score(self, docid: int, doc_word_counts: dict[str, int], query_word_counts: dict[str, int]) -> float:
+    def score(self, docid: int, doc_word_counts: dict[str, dict[str, int]], query_word_counts: dict[str, int]) -> float:
         # 1. Get necessary information from each index
-
         # Product Index (Product Description)
-        prod_desc_avdl = self.product_index.get_statistics()['mean_document_length']
-        prod_desc_num_docs = self.product_index.get_statistics()['number_of_documents']
         try:
-            prod_desc_doc_len = self.product_index.get_doc_metadata(docid)['length']
+            prod_doc_len = self.product_index.get_doc_metadata(docid)['length']
         except KeyError:
-            prod_desc_doc_len = 0
+            prod_doc_len = 0
+        avdl_prod = self.stats_prod['mean_document_length']
 
         # Ingredient Index (Ingredient Function)
-        ingredient_avdl = self.ingredient_index.get_statistics()['mean_document_length']
-        ingredient_num_docs = self.ingredient_index.get_statistics()['number_of_documents']
         try:
             ingredient_doc_len = self.ingredient_index.get_doc_metadata(docid)['length']
         except KeyError:
             ingredient_doc_len = 0
+        avdl_ing = self.stats_ing['mean_document_length']
 
-        # Hyperparameters
-        b = self.b
-        k1 = self.k1
-        k3 = self.k3
         score = 0.0
 
-        # 2. Compute additional terms to use in algorithm
-        for q_term in query_word_counts:
+        # 2. Iterate through query terms
+        for q_term, qtf in query_word_counts.items():
+            # Reset TFs for every term
             tf_prod = 0.0
-            tf_ingred = 0.0
-            # 3. Compute TF for product index
-            if q_term and q_term in self.product_index.index:
-                prod_doc_tf = doc_word_counts[q_term] # term frequency
-                if prod_doc_tf > 0:
-                    tf_prod = ((k1 + 1) * prod_doc_tf) / float((k1 * (1 - b + (b * (prod_desc_doc_len/float(prod_desc_avdl))))) + prod_doc_tf)
-            # 4. Compute TF for ingredient index
-            if q_term and q_term in self.ingredient_index.index:
-                ingred_doc_tf = doc_word_counts[q_term] # term frequency
-                if ingred_doc_tf > 0:
-                    tf_ingred = ((k1 + 1) * ingred_doc_tf) / float((k1 * (1 - b + (b * (ingredient_doc_len/float(ingredient_avdl))))) + ingred_doc_tf)
+            tf_ing = 0.0
+            
+            # 3. Retrieve TF specific to each field
+            term_data = doc_word_counts.get(q_term, {'prod': 0, 'ing': 0})
+            tf_prod = term_data['prod']
+            tf_ing = term_data['ing']
+                        
+            if tf_prod == 0 and tf_ing == 0:
+                continue
+            
+            # 4. Normalize Frequencies (The "F" part of BM25F)
+            # Calculate denominator for Product Description
+            denom_prod = 1.0
+            if avdl_prod > 0:
+                denom_prod = 1 - self.b + self.b * (prod_doc_len / avdl_prod)
+                
+            # Calculate denominator for Ingredient Function
+            denom_ing = 1.0
+            if avdl_ing > 0:
+                denom_ing = 1 - self.b + self.b * (ingredient_doc_len / avdl_ing)
 
-            # 5. Get total tf
-            tf_doc = self.w_prod * tf_prod + self.w_ing * tf_ingred
-
-            # document frequency for each index
-            df_product = self.product_index.get_term_metadata(q_term)["doc_frequency"]
-            df_ingredient = self.ingredient_index.get_term_metadata(q_term)["doc_frequency"]
-            df = df_product + df_ingredient
-            total_docs = max(prod_desc_num_docs, ingredient_num_docs)
-            idf = np.log((total_docs - df + 0.5) / (df + 0.5))
-            # compute idf value based on max(doc_freq)
-            # blended_idf = max(np.log((prod_desc_num_docs - df_product + 0.5) / float(df_product + 0.5)), (np.log((ingredient_num_docs - df_ingredient + 0.5) / float(df_ingredient + 0.5))))
-            qtf = query_word_counts[q_term]
-            # qtf_norm = ((k3 + 1) * qtf) / float(k3 + qtf)
-            qtf_norm = (((k3 + 1) * qtf) / (k3 * qtf))
-            bm25 = qtf_norm * tf_doc * idf
+            # Combine the weighted, normalized frequencies
+            w_tf = (self.w_prod * tf_prod / denom_prod) + (self.w_ing * tf_ing / denom_ing)
+            
+            # 5. Apply Saturation (The BM25 part)
+            saturation = w_tf / (self.k1 + w_tf)
+            
+            # 6. Calculate IDF
+            # Document frequency for each index
+            df_product = 0
+            if q_term in self.product_index.vocabulary:
+                df_product = self.product_index.get_term_metadata(q_term)["doc_frequency"]
+            df_ingredient = 0
+            if q_term in self.ingredient_index.vocabulary:
+                df_ingredient = self.ingredient_index.get_term_metadata(q_term)["doc_frequency"]
+           
+            df = max(df_product, df_ingredient)
+            
+            # Get N (Total docs) safely
+            num_docs_prod = self.stats_prod.get('number_of_documents', 0)
+            num_docs_ing = self.stats_ing.get('number_of_documents', 0)
+            N = max(num_docs_prod, num_docs_ing)
+            
+            idf = np.log((N - df + 0.5) / (df + 0.5) + 1.0)
+            
+            # 7. Query Term Weighting (k3)
+            qtf_norm = ((self.k3 + 1) * qtf) / (self.k3 + qtf)
+            
+            # 8. Final Score
+            bm25 = qtf_norm * saturation * idf
             score += bm25
 
         return score
