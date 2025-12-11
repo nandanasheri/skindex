@@ -1,1 +1,4 @@
 *.jsonl
+/env
+/data
+/__cache__

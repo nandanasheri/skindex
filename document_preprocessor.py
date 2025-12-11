@@ -1,10 +1,14 @@
 """
-This is the template for implementing the tokenizer for your search engine.
-You will be testing some tokenization techniques.
+Document Preprocessor for Tokenization
 """
 from nltk.tokenize import RegexpTokenizer, MWETokenizer
-
 # Import additional modules here (if necessary)
+# import spacy
+
+# Trained Pipeline for English optimized on CPU
+# nlp = spacy.load("en_core_web_sm")
+# # for named entity recognition
+# nlp.add_pipe("merge_entities")
 
 class Tokenizer:
     def __init__(self, lowercase: bool = True, multiword_expressions: list[str] = None) -> None:
@@ -18,13 +22,19 @@ class Tokenizer:
             multiword_expressions: A list of strings that should be recognized as single tokens
                 If set to 'None' no multi-word expression matching is performed.
         """
-        # TODO: Save arguments that are needed as fields of this class
+        # lowercase - boolean that determines tokenization
+        # multiword_exp - set of the multiword expressions
         self.lowercase = lowercase
-        if multiword_expressions is None:
-            self.multiword_expressions = None
+        
+        mwe_tokens = []
+        if multiword_expressions:
+            self.multiword_exp = set(multiword_expressions)
+            for exp in multiword_expressions:
+                mwe_tokens.append((exp.split()))
         else:
-            self.multiword_expressions = [tuple(expression.split()) for expression in multiword_expressions]
-            self.mweTokenizer = MWETokenizer(self.multiword_expressions, separator="_")
+            self.multiword_exp = set()
+
+        self.mwe_tokenizer = MWETokenizer(mwe_tokens, separator=" ")
 
     def postprocess(self, input_tokens: list[str]) -> list[str]:
         """
@@ -41,20 +51,24 @@ class Tokenizer:
             If lowercase, "Taylor" "Swift" -> "taylor" "swift"
             If "Taylor Swift" in multiword_expressions, "Taylor" "Swift" -> "Taylor Swift"
         """
-        # TODO: Add support for lower-casing and multi-word expressions
+        
+        postprocess_tokens = []
+        # no need to convert to lowercase and no multiword expressions, just return as is
+        if not self.lowercase and not self.multiword_exp:
+            return input_tokens
+        
+        # Support for lower-casing and multi-word expressions
+        for token in input_tokens:
+            if not token:
+                continue
+            if self.lowercase:
+                postprocess_tokens.append(token.lower())
+            else:
+                postprocess_tokens.append(token)
 
-        # muliword expression handler
-        if self.multiword_expressions:
-            input_tokens = self.mweTokenizer.tokenize(input_tokens)
-
-        # Process each token accordingly
-        if self.lowercase:
-            input_tokens = [token.lower().replace("_", " ") for token in input_tokens]
-        else:
-            input_tokens = [token.replace("_", " ") for token in input_tokens]
-
-        return input_tokens
-
+        if self.multiword_exp:
+            postprocess_tokens = self.mwe_tokenizer.tokenize(postprocess_tokens)
+        return postprocess_tokens
 
     def tokenize(self, text: str) -> list[str]:
         """
@@ -69,6 +83,7 @@ class Tokenizer:
         # NOTE: You should implement this in a subclass, not here
         raise NotImplementedError(
             'tokenize() is not implemented in the base class; please use a subclass')
+
 
 class RegexTokenizer(Tokenizer):
     def __init__(self, token_regex: str = '\w+', lowercase: bool = True, multiword_expressions: list[str] = None) -> None:
@@ -95,10 +110,10 @@ class RegexTokenizer(Tokenizer):
                 No need to perform/implement multi-word expression recognition for HW3; you can ignore this.
         """
         super().__init__(lowercase, multiword_expressions)
-        # TODO: Save a new argument that is needed as a field of this class
-        # TODO: Initialize the NLTK's RegexpTokenizer
+        # Token Regex - save as a field of the class
         self.token_regex = token_regex
-        self.regexTokenizer = RegexpTokenizer(token_regex)
+        # Initialize the NLTK's RegexpTokenizer 
+        self.tokenizer = RegexpTokenizer(token_regex)
 
     def tokenize(self, text: str) -> list[str]:
         """
@@ -110,12 +125,11 @@ class RegexTokenizer(Tokenizer):
         Returns:
             A list of tokens
         """
-        # TODO: Tokenize the given text and perform postprocessing on the list of tokens
-        #       using the postprocess function
-        tokens = self.regexTokenizer.tokenize(text)
-        processed_tokens = super().postprocess(tokens)
-        return processed_tokens
+        # tokenize using the NLTK's tokenizer for Regex and then post process
+        input_tokens = self.tokenizer.tokenize(text)
+        return self.postprocess(input_tokens)
 
+    
 # Don't forget that you can have a main function here to test anything in the file
 if __name__ == '__main__':
     pass
