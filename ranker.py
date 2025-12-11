@@ -4,6 +4,7 @@ Rankers - Specifically BM25
 from collections import Counter, defaultdict
 import numpy as np
 from indexing import InvertedIndex
+import random
 
 
 class Ranker:
@@ -13,8 +14,8 @@ class Ranker:
     A Ranker can be configured with any RelevanceScorer.
     """
     # This class is responsible for returning a list of sorted relevant documents.
-    def __init__(self, product_index: InvertedIndex, ingredient_index: InvertedIndex, document_preprocessor, stopwords: set[str],
-                 scorer: 'RelevanceScorer', raw_text_dict: dict[int, str] = None) -> None:
+    def __init__(self, product_index: InvertedIndex, document_preprocessor, stopwords: set[str],
+                 scorer: 'RelevanceScorer', ingredient_index: InvertedIndex = None, raw_text_dict: dict[int, str] = None) -> None:
         """
         Initializes the state of the Ranker object.
 
@@ -61,13 +62,13 @@ class Ranker:
                 for docid, freq in product_postings:
                     # Store count of tokens in each doc in product index
                     doc_data[docid][token]['prod'] = freq
-                    
-            # B. Ingredient Index Postings
-            if token in self.ingredient_index.vocabulary:
-                ingredient_postings = self.ingredient_index.get_postings(token)
-                for docid, freq in ingredient_postings:
-                    # Store count of tokens in each doc in ingredient index
-                    doc_data[docid][token]['ing'] = freq
+            if self.ingredient_index:
+                # B. Ingredient Index Postings
+                if token in self.ingredient_index.vocabulary:
+                    ingredient_postings = self.ingredient_index.get_postings(token)
+                    for docid, freq in ingredient_postings:
+                        # Store count of tokens in each doc in ingredient index
+                        doc_data[docid][token]['ing'] = freq
         
         # 3. Score Documents
         all_scores = []
@@ -141,7 +142,7 @@ class BM25(RelevanceScorer):
         for q_term in query_word_counts:
             # 3. For all query parts, compute the TF, IDF, and QTF values to get a score
             if q_term and q_term in self.index.index:
-                doc_tf = doc_word_counts[q_term] # term frequency
+                doc_tf = doc_word_counts[q_term]['prod'] # term frequency
                 if doc_tf > 0:
                     # document frequency
                     df = self.index.get_term_metadata(q_term)["doc_frequency"]
@@ -242,3 +243,17 @@ class BM25F(RelevanceScorer):
             score += bm25
 
         return score
+
+class RandomScorer(RelevanceScorer):
+    def __init__(self, index, parameters=None):
+        self.index = index
+
+    def score(self, docid: int, doc_word_counts: dict[str, int], query_word_counts: dict[str, int]) -> float:
+        return random.random()
+
+class DocLengthScorer(RelevanceScorer):
+    def __init__(self, index, parameters=None):
+        self.index = index
+
+    def score(self, docid: int, doc_word_counts: dict[str, int], query_word_counts: dict[str, int]) -> float:
+        return float(self.index.get_doc_metadata(docid)['length'])
